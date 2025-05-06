@@ -12,83 +12,55 @@ interface ChatInterfaceProps {
   username: string;
 }
 
-// Use a constant storage key for backup
-const STORAGE_KEY = 'pdf-chat-messages';
-
 const ChatInterface: React.FC<ChatInterfaceProps> = ({ username }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messageIdsRef = useRef<Set<string>>(new Set());
+  const pusherRef = useRef<Pusher | null>(null);
   
-  // Fetch messages from the server on initial render
-  useEffect(() => {
-    const fetchMessages = async () => {
-      try {
-        console.log("Fetching messages from server");
-        setIsLoading(true);
-        
-        const response = await fetch('/api/messages');
-        if (response.ok) {
-          const data = await response.json() as Message[];
-          console.log("Received messages from server:", data);
-          
-          // Create a set of existing message IDs
-          const messageIds = new Set<string>();
-          data.forEach(msg => messageIds.add(msg.id));
-          
-          // Update the message IDs ref
-          messageIdsRef.current = messageIds;
-          
-          // Set the messages
-          setMessages(data);
-        } else {
-          console.error("Failed to fetch messages:", response.statusText);
-          // Try to load from localStorage as backup
-          const storedMessages = localStorage.getItem(STORAGE_KEY);
-          if (storedMessages) {
-            const parsedMessages = JSON.parse(storedMessages) as Message[];
-            setMessages(parsedMessages);
-            parsedMessages.forEach(msg => messageIdsRef.current.add(msg.id));
-          }
-        }
-      } catch (error) {
-        console.error("Error fetching messages:", error);
-        // Try to load from localStorage as backup
-        const storedMessages = localStorage.getItem(STORAGE_KEY);
-        if (storedMessages) {
-          const parsedMessages = JSON.parse(storedMessages) as Message[];
-          setMessages(parsedMessages);
-          parsedMessages.forEach(msg => messageIdsRef.current.add(msg.id));
-        }
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    
-    fetchMessages();
-  }, []);
-  
-  // Save messages to localStorage as backup whenever they change
-  useEffect(() => {
+  // Fetch messages from the server
+  const fetchMessages = async () => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
+      console.log("Fetching messages from server");
+      
+      const response = await fetch('/api/messages');
+      if (response.ok) {
+        const data = await response.json() as Message[];
+        console.log("Received messages from server:", data);
+        
+        // Create a set of existing message IDs
+        const messageIds = new Set<string>();
+        data.forEach(msg => messageIds.add(msg.id));
+        
+        // Update the message IDs ref
+        messageIdsRef.current = messageIds;
+        
+        // Set the messages
+        setMessages(data);
+      } else {
+        console.error("Failed to fetch messages:", response.statusText);
+        throw new Error(response.statusText);
+      }
     } catch (error) {
-      console.error('Error saving messages to localStorage:', error);
+      console.error("Error fetching messages:", error);
+      alert('Failed to load messages. Please try refreshing the page.');
+    } finally {
+      setIsLoading(false);
     }
-  }, [messages]);
-  
-  // Initialize Pusher
+  };
+
+  // Initialize Pusher and fetch messages
   useEffect(() => {
-    // Initialize Pusher with your app key
-    const pusher = new Pusher('3c81f9444a590ff17416', {
+    // Initialize Pusher
+    pusherRef.current = new Pusher('3c81f9444a590ff17416', {
       cluster: 'ap2',
       forceTLS: true,
     });
 
     // Subscribe to the chat channel
-    const channel = pusher.subscribe('chat-channel');
+    const channel = pusherRef.current.subscribe('chat-channel');
     
     // Bind to the new message event
     channel.bind('new-message', (data: Message) => {
@@ -97,17 +69,29 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ username }) => {
       if (!messageIdsRef.current.has(data.id)) {
         console.log("Adding new message:", data.id);
         messageIdsRef.current.add(data.id);
-        setMessages(prevMessages => [...prevMessages, data]);
+        setMessages(prevMessages => [...prevMessages, data].sort((a, b) => a.timestamp - b.timestamp));
       } else {
         console.log("Skipping duplicate message:", data.id);
       }
     });
 
-    // Clean up the subscription when component unmounts
+    // Bind to the clear messages event
+    channel.bind('clear-messages', () => {
+      console.log("Received clear messages event");
+      setMessages([]);
+      messageIdsRef.current.clear();
+    });
+
+    // Fetch initial messages
+    fetchMessages();
+
+    // Clean up
     return () => {
-      channel.unbind_all();
-      channel.unsubscribe();
-      pusher.disconnect();
+      if (pusherRef.current) {
+        channel.unbind_all();
+        channel.unsubscribe();
+        pusherRef.current.disconnect();
+      }
     };
   }, []);
 
@@ -124,18 +108,12 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ username }) => {
     
     const newMessage: Message = {
       id: Date.now().toString(),
-      text: inputMessage,
+      text: inputMessage.trim(),
       sender: username,
       timestamp: Date.now(),
     };
     
     console.log("Sending new message:", newMessage);
-    
-    // Add message ID to the set to prevent duplicates
-    messageIdsRef.current.add(newMessage.id);
-    
-    // Add the message locally for immediate display
-    setMessages(prevMessages => [...prevMessages, newMessage]);
     
     // Clear the input right away for better UX
     setInputMessage('');
@@ -155,7 +133,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ username }) => {
       }
     } catch (error) {
       console.error('Error sending message:', error);
-      // Optionally show an error to the user
       alert('Failed to send message. Please try again.');
     }
   };
@@ -172,11 +149,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ username }) => {
         if (!response.ok) {
           throw new Error('Failed to clear chat history');
         }
-        
-        // Clear locally
-        localStorage.removeItem(STORAGE_KEY);
-        setMessages([]);
-        messageIdsRef.current.clear();
       } catch (error) {
         console.error('Error clearing chat:', error);
         alert('Failed to clear chat history. Please try again.');
@@ -199,12 +171,20 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ username }) => {
           <h1 className="text-xl font-bold">Private Chat</h1>
           <p>You are chatting as: {username}</p>
         </div>
-        <button 
-          onClick={clearChat}
-          className="bg-red-500 text-white px-3 py-1 rounded text-sm"
-        >
-          Clear Chat
-        </button>
+        <div className="flex gap-2">
+          <button 
+            onClick={() => fetchMessages()}
+            className="bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-400"
+          >
+            Refresh
+          </button>
+          <button 
+            onClick={clearChat}
+            className="bg-red-500 text-white px-3 py-1 rounded text-sm hover:bg-red-400"
+          >
+            Clear Chat
+          </button>
+        </div>
       </div>
       
       {/* Messages container */}
@@ -236,7 +216,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ username }) => {
                     }`}
                   >
                     <div className="font-bold">{message.sender}</div>
-                    <p>{message.text}</p>
+                    <p className="break-words">{message.text}</p>
                     <div className="text-xs text-right mt-1 opacity-75">
                       {formatTime(message.timestamp)}
                     </div>
@@ -263,7 +243,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ username }) => {
           />
           <button
             type="submit"
-            className="bg-blue-500 text-white px-6 py-2 rounded-r font-medium disabled:bg-blue-300"
+            className="bg-blue-500 text-white px-6 py-2 rounded-r font-medium hover:bg-blue-400 disabled:bg-blue-300"
             disabled={isLoading || !inputMessage.trim()}
           >
             Send

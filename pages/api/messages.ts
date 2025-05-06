@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import Pusher from 'pusher';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 
 // Initialize Pusher with hardcoded values from .env.local
 const pusher = new Pusher({
@@ -12,18 +13,18 @@ const pusher = new Pusher({
   useTLS: true,
 });
 
-// Message storage location - store in a more permanent location
-const DATA_FILE = path.join(process.cwd(), 'data', 'chat-messages.json');
+// Message storage location - store in user's home directory for persistence
+const DATA_DIR = path.join(os.homedir(), '.pdf-chat-data');
+const DATA_FILE = path.join(DATA_DIR, 'chat-messages.json');
 
-// Ensure the data directory exists
-const dataDir = path.join(process.cwd(), 'data');
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
+// Ensure the data directory exists with proper permissions
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o755 });
 }
 
 // Initialize with an empty array if the file doesn't exist
 if (!fs.existsSync(DATA_FILE)) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify([], null, 2));
+  fs.writeFileSync(DATA_FILE, JSON.stringify([], null, 2), { mode: 0o644 });
 }
 
 // Type for the messages
@@ -43,7 +44,16 @@ function getMessages(): Message[] {
         return [];
       }
       const data = fs.readFileSync(DATA_FILE, 'utf8');
-      return JSON.parse(data);
+      const messages = JSON.parse(data);
+      
+      // Validate the data structure
+      if (!Array.isArray(messages)) {
+        console.error('Invalid messages data structure');
+        return [];
+      }
+      
+      // Sort messages by timestamp
+      return messages.sort((a, b) => a.timestamp - b.timestamp);
     } catch (error) {
       console.error(`Error reading messages file (${retries} retries left):`, error);
       retries--;
@@ -60,7 +70,9 @@ function saveMessages(messages: Message[]): boolean {
   let retries = 3;
   while (retries > 0) {
     try {
-      fs.writeFileSync(DATA_FILE, JSON.stringify(messages, null, 2));
+      // Sort messages by timestamp before saving
+      const sortedMessages = messages.sort((a, b) => a.timestamp - b.timestamp);
+      fs.writeFileSync(DATA_FILE, JSON.stringify(sortedMessages, null, 2), { mode: 0o644 });
       return true;
     } catch (error) {
       console.error(`Error saving messages (${retries} retries left):`, error);
@@ -77,10 +89,25 @@ export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
+  // Add CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  // Handle OPTIONS request for CORS
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
   // GET request - return all messages
   if (req.method === 'GET') {
-    const messages = getMessages();
-    return res.status(200).json(messages);
+    try {
+      const messages = getMessages();
+      return res.status(200).json(messages);
+    } catch (error) {
+      console.error('Error fetching messages:', error);
+      return res.status(500).json({ message: 'Error fetching messages' });
+    }
   }
   
   // POST request - add a new message
@@ -124,10 +151,17 @@ export default async function handler(
   
   // DELETE request - clear all messages
   if (req.method === 'DELETE') {
-    if (saveMessages([])) {
-      return res.status(200).json({ success: true });
-    } else {
-      return res.status(500).json({ message: 'Failed to clear messages' });
+    try {
+      if (saveMessages([])) {
+        // Also notify all clients about the clear
+        await pusher.trigger('chat-channel', 'clear-messages', {});
+        return res.status(200).json({ success: true });
+      } else {
+        return res.status(500).json({ message: 'Failed to clear messages' });
+      }
+    } catch (error) {
+      console.error('Error clearing messages:', error);
+      return res.status(500).json({ message: 'Error clearing messages' });
     }
   }
   
