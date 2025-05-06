@@ -51,15 +51,4 @@ This is a Next.js application that provides a PDF viewer with a password-protect
 4. Enter one of two passwords:
    - `9544` to access as "Unknown 1"
    - `911` to access as "Unknown 2"
-5. Start chatting in the private chat room
-
-## Environment Variables
-
-You can use environment variables for your Pusher credentials by creating a `.env.local` file:
-
-```
-PUSHER_APP_ID=your_app_id
-PUSHER_KEY=your_key
-PUSHER_SECRET=your_secret
-PUSHER_CLUSTER=your_cluster
-``` 
+5. Start chatting in the private chat room 
