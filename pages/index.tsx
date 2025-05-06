@@ -20,7 +20,6 @@ const Home: React.FC = () => {
     <div className="min-h-screen bg-gray-100 p-2 sm:p-4 md:p-6">
       <Head>
         <title>PDF Viewer</title>
-        <meta name="description" content="PDF Viewer with password protected chat" />
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
         <link rel="icon" href="/favicon.ico" />
       </Head>
